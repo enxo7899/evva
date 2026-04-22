@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+
+# next
+.next/
+out/
+*.tsbuildinfo
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# env
+.env
+.env.local
+.env.*.local
+
+# macOS
+.DS_Store
+
+# local generated media artifacts
+public/uploads/
+public/generated/
+public/renders/
+
+# working notes (local only, not part of the repo)
+session-ses_*.md
+wrapper.md
+todo.md

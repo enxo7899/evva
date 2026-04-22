@@ -1,0 +1,470 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  createComposition,
+  createRender,
+  fetchConfig,
+  getComposition,
+  getRender,
+  selectCandidate,
+  uploadVideoFile
+} from "@features/generation/api";
+import { useJobPolling } from "@hooks/use-job-polling";
+import type { ConfigResponse } from "@/contracts/api";
+import type {
+  Candidate as DomainCandidate,
+  CompositionJob,
+  JobStatus,
+  VideoAnalysis as DomainAnalysis,
+  VocalPreference
+} from "@/domain/contracts";
+import { CandidatesSection } from "./candidates";
+import { DirectionSection } from "./direction";
+import { ExportSection, type RendererMode } from "./export-bar";
+import {
+  MIX_PRESETS,
+  type Candidate as UiCandidate,
+  type MixPresetKey
+} from "./models";
+import { ProgressRail, type StudioStep } from "./progress-rail";
+import { Button, SectionLabel } from "./primitives";
+import { Stage } from "./stage";
+import { UploadHero } from "./upload-hero";
+import { IconSparkle, IconUpload } from "./icons";
+
+export function StudioShell() {
+  // ---- Source / upload ----
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [videoAssetId, setVideoAssetId] = useState<`vid_${string}` | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  // ---- Direction ----
+  const [freeText, setFreeText] = useState("");
+  const [vibe, setVibe] = useState<string[]>([]);
+  const [exclusions, setExclusions] = useState("");
+  const [vocal, setVocal] = useState<VocalPreference>("instrumental_only");
+
+  // ---- Composition (generation) ----
+  const [compositionId, setCompositionId] = useState<`cmp_${string}` | null>(null);
+  const [compositionStatus, setCompositionStatus] = useState<JobStatus | "idle">("idle");
+  const [compositionProgress, setCompositionProgress] = useState(0);
+  const [candidates, setCandidates] = useState<UiCandidate[]>([]);
+  const [analysis, setAnalysis] = useState<DomainAnalysis | null>(null);
+
+  // ---- Selection + mix ----
+  const [selectedCandidateId, setSelectedCandidateId] = useState<`gsc_${string}` | null>(null);
+  const [preset, setPreset] = useState<MixPresetKey>("balanced");
+  const [levels, setLevels] = useState({
+    music: MIX_PRESETS[0].musicLevel,
+    original: MIX_PRESETS[0].originalAudioLevel
+  });
+
+  // ---- Render ----
+  const [renderJobId, setRenderJobId] = useState<`rnd_${string}` | null>(null);
+  const [renderStatus, setRenderStatus] = useState<JobStatus | "idle">("idle");
+  const [renderProgress, setRenderProgress] = useState(0);
+  const [outputUrl, setOutputUrl] = useState<string | null>(null);
+
+  // ---- Config (honest provider disclosure) ----
+  const [config, setConfig] = useState<ConfigResponse | null>(null);
+
+  // ---- UX ----
+  const [busy, setBusy] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const uploadLock = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchConfig()
+      .then((c) => {
+        if (!cancelled) setConfig(c);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
+  const selectedCandidate = useMemo(
+    () => candidates.find((c) => c.id === selectedCandidateId) ?? null,
+    [candidates, selectedCandidateId]
+  );
+
+  const currentStep: StudioStep = useMemo(() => {
+    if (!videoAssetId) return "upload";
+    if (compositionStatus === "idle") return "direct";
+    if (compositionStatus !== "completed") return "generate";
+    if (!selectedCandidateId) return "mix";
+    return "export";
+  }, [compositionStatus, selectedCandidateId, videoAssetId]);
+
+  const rendererMode: RendererMode = config?.renderer?.mode ?? null;
+
+  // ---- Flow ----
+
+  const handleFile = async (file: File) => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    const objectUrl = URL.createObjectURL(file);
+    setSelectedFile(file);
+    setPreviewUrl(objectUrl);
+    setErrorMessage(null);
+
+    // Reset downstream state on new source.
+    setVideoAssetId(null);
+    setCompositionId(null);
+    setCompositionStatus("idle");
+    setCompositionProgress(0);
+    setCandidates([]);
+    setAnalysis(null);
+    setSelectedCandidateId(null);
+    setRenderJobId(null);
+    setRenderStatus("idle");
+    setRenderProgress(0);
+    setOutputUrl(null);
+
+    const durationSec = await readDuration(objectUrl);
+    if (uploadLock.current) return;
+    uploadLock.current = true;
+    try {
+      setUploading(true);
+      const res = await uploadVideoFile({ file, durationSec });
+      setVideoAssetId(res.videoAsset.id);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Upload failed.");
+      setSelectedFile(null);
+      URL.revokeObjectURL(objectUrl);
+      setPreviewUrl(null);
+    } finally {
+      setUploading(false);
+      uploadLock.current = false;
+    }
+  };
+
+  const applyComposition = (composition: CompositionJob) => {
+    setCompositionStatus(composition.status);
+    setCompositionProgress(composition.progress);
+    setAnalysis(composition.analysis);
+    setCandidates(mapCandidates(composition.candidates));
+    if (composition.selectedCandidateId) {
+      setSelectedCandidateId(composition.selectedCandidateId);
+    }
+    if (composition.status === "failed") {
+      setErrorMessage(composition.error ?? "Composition failed.");
+    }
+  };
+
+  const pollComposition = async () => {
+    if (!compositionId) return;
+    try {
+      const { composition } = await getComposition(compositionId);
+      applyComposition(composition);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Poll failed.");
+    }
+  };
+
+  const pollRender = async () => {
+    if (!renderJobId) return;
+    try {
+      const { renderJob } = await getRender(renderJobId);
+      setRenderStatus(renderJob.status);
+      setRenderProgress(renderJob.progress);
+      if (renderJob.status === "completed") {
+        setOutputUrl(renderJob.outputUrl ?? null);
+      }
+      if (renderJob.status === "failed") {
+        setErrorMessage(renderJob.error ?? "Render failed.");
+      }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Render poll failed.");
+    }
+  };
+
+  useJobPolling(
+    compositionStatus === "queued" || compositionStatus === "processing",
+    pollComposition,
+    1200
+  );
+  useJobPolling(
+    renderStatus === "queued" || renderStatus === "processing",
+    pollRender,
+    1000
+  );
+
+  const compose = async () => {
+    if (!videoAssetId) return;
+    try {
+      setBusy(true);
+      setErrorMessage(null);
+      const direction = {
+        freeText: freeText.trim() || undefined,
+        desiredVibe: vibe.length > 0 ? vibe : undefined,
+        exclusions: exclusions
+          ? exclusions.split(",").map((x) => x.trim()).filter(Boolean)
+          : undefined,
+        vocalPreference: vocal
+      };
+      const { composition } = await createComposition({
+        videoAssetId,
+        direction,
+        candidateCount: 3
+      });
+      setCompositionId(composition.id);
+      applyComposition(composition);
+      setSelectedCandidateId(null);
+      setOutputUrl(null);
+      setRenderStatus("idle");
+      setRenderJobId(null);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Could not compose.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const chooseCandidate = async (candidateId: `gsc_${string}`) => {
+    if (!compositionId) return;
+    try {
+      setBusy(true);
+      setErrorMessage(null);
+      const { composition } = await selectCandidate({ compositionId, candidateId });
+      applyComposition(composition);
+      setSelectedCandidateId(candidateId);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Could not select track.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const markNotFit = (_candidateId: `gsc_${string}`) => {
+    // No feedback store in this MVP; keep the UI affordance for user clarity.
+    void _candidateId;
+  };
+
+  const startRender = async () => {
+    if (!compositionId || !selectedCandidateId) return;
+    try {
+      setBusy(true);
+      setErrorMessage(null);
+      const { renderJob } = await createRender({
+        compositionId,
+        mix: {
+          preset,
+          originalAudioLevel: levels.original,
+          musicLevel: levels.music
+        }
+      });
+      setRenderJobId(renderJob.id);
+      setRenderStatus(renderJob.status);
+      setRenderProgress(renderJob.progress);
+      setOutputUrl(null);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Could not start render.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---- Render branches ----
+
+  if (!selectedFile) {
+    return <UploadHero onFile={handleFile} errorMessage={errorMessage} />;
+  }
+
+  const canCompose =
+    Boolean(videoAssetId) &&
+    !busy &&
+    compositionStatus !== "queued" &&
+    compositionStatus !== "processing";
+
+  return (
+    <div className="mx-auto min-h-screen w-full max-w-[1240px] px-6 pb-24 pt-8 md:px-10">
+      <header className="flex flex-wrap items-center justify-between gap-6 pb-8">
+        <div className="flex items-baseline gap-3">
+          <span className="font-display text-[22px] leading-none tracking-tightest text-ink">
+            Evva
+          </span>
+          <span className="text-[11px] uppercase tracking-[0.18em] text-ink-4">Studio</span>
+          {config?.music?.mode === "mock" ? (
+            <span
+              title={config.music.note}
+              className="ml-2 rounded-full border border-accent/30 bg-accent-soft px-2 py-0.5 text-[11px] text-accent-ink"
+            >
+              Preview music
+            </span>
+          ) : config?.music?.mode === "replicate" ? (
+            <span
+              title={config.music.note}
+              className="ml-2 rounded-full border border-line bg-paper px-2 py-0.5 text-[11px] text-ink-2"
+            >
+              Replicate
+            </span>
+          ) : null}
+        </div>
+        <ProgressRail current={currentStep} />
+        <button
+          type="button"
+          onClick={() => {
+            if (previewUrl) URL.revokeObjectURL(previewUrl);
+            setSelectedFile(null);
+            setPreviewUrl(null);
+          }}
+          className="inline-flex items-center gap-2 text-[12px] text-ink-3 transition hover:text-ink"
+        >
+          <IconUpload className="h-3.5 w-3.5" />
+          New reel
+        </button>
+      </header>
+
+      {errorMessage ? (
+        <div className="mb-6 rounded-xl border border-accent/30 bg-accent-soft px-4 py-3 text-[13px] text-accent-ink">
+          {errorMessage}
+        </div>
+      ) : null}
+
+      {uploading ? (
+        <div className="mb-6 rounded-xl border border-line bg-paper px-4 py-3 text-[13px] text-ink-2">
+          Uploading reel…
+        </div>
+      ) : null}
+
+      <div className="grid gap-10 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
+        <div className="space-y-10">
+          <section className="space-y-5">
+            <SectionLabel number="01" title="Stage" />
+            {previewUrl ? (
+              <Stage
+                videoUrl={previewUrl}
+                fileName={selectedFile.name}
+                selectedCandidate={selectedCandidate}
+                analysis={analysisToStageShape(analysis)}
+                levels={levels}
+                onLevelsChange={setLevels}
+                preset={preset}
+                onPresetChange={setPreset}
+              />
+            ) : null}
+          </section>
+
+          <ExportSection
+            canRender={Boolean(selectedCandidateId)}
+            rendererMode={rendererMode}
+            renderStatus={renderStatus === "idle" ? "idle" : renderStatus}
+            renderProgress={renderProgress}
+            outputUrl={outputUrl}
+            busy={busy}
+            onRender={() => void startRender()}
+          />
+        </div>
+
+        <div className="space-y-10">
+          <DirectionSection
+            freeText={freeText}
+            vibe={vibe}
+            exclusions={exclusions}
+            vocal={vocal}
+            onFreeText={setFreeText}
+            onVibe={setVibe}
+            onExclusions={setExclusions}
+            onVocal={setVocal}
+          />
+
+          <div className="rounded-2xl border border-line bg-paper p-5">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="font-display text-[18px] tracking-tighter text-ink">
+                  Compose soundtrack options
+                </p>
+                <p className="mt-1 text-[13px] text-ink-3">
+                  {compositionStatus === "idle"
+                    ? "Generate original tracks tuned to this reel."
+                    : compositionStatus === "completed"
+                      ? `${candidates.length} options ready. Select one to audition.`
+                      : "Generating…"}
+                </p>
+              </div>
+              <Button
+                variant="primary"
+                size="md"
+                onClick={() => void compose()}
+                disabled={!canCompose}
+              >
+                <IconSparkle className="h-4 w-4" />
+                {compositionStatus === "completed" ? "Compose again" : "Compose"}
+              </Button>
+            </div>
+          </div>
+
+          <CandidatesSection
+            candidates={candidates}
+            selectedId={selectedCandidateId}
+            onSelect={(id) => void chooseCandidate(id)}
+            onNotFit={markNotFit}
+            generationStatus={compositionStatus === "idle" ? "idle" : compositionStatus}
+            generationProgress={compositionProgress}
+            onRegenerate={() => void compose()}
+            canRegenerate={Boolean(compositionId)}
+            busy={busy}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- helpers ----
+
+async function readDuration(objectUrl: string): Promise<number> {
+  return new Promise((resolve) => {
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.src = objectUrl;
+    v.onloadedmetadata = () => resolve(Number(v.duration.toFixed(2)) || 15);
+    v.onerror = () => resolve(15);
+  });
+}
+
+function mapCandidates(items: DomainCandidate[]): UiCandidate[] {
+  return items.map((c) => ({
+    id: c.id,
+    title: c.title,
+    tags: c.tags,
+    whyItFits: c.prompt,
+    isInstrumental: c.isInstrumental,
+    audioUrl: c.audioUrl,
+    durationSec: c.durationSec
+  }));
+}
+
+type StageAnalysis = {
+  themes: string[];
+  moods: string[];
+  energy: number;
+  pacing: "slow" | "medium" | "fast";
+  summary: string;
+};
+
+/**
+ * The Stage component was previously fed a rich (fake) analysis. We now feed
+ * it honest minimal analysis by mapping into the shape it expects with sane
+ * neutral defaults — no invented moods/themes.
+ */
+function analysisToStageShape(a: DomainAnalysis | null): StageAnalysis | null {
+  if (!a) return null;
+  return {
+    themes: a.aspectRatio ? [a.aspectRatio] : [],
+    moods: [],
+    energy: 0.5,
+    pacing: a.durationSec < 10 ? "fast" : a.durationSec > 25 ? "slow" : "medium",
+    summary: a.summary
+  };
+}
