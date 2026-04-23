@@ -23,7 +23,8 @@ export function Stage({
   preset,
   onPresetChange,
   initialDimensions,
-  onDimensionsDetected
+  onDimensionsDetected,
+  showMixDock = true
 }: {
   videoUrl: string;
   fileName: string;
@@ -37,6 +38,9 @@ export function Stage({
   initialDimensions?: StageDimensions | null;
   /** Fires once we know the video's natural dimensions. */
   onDimensionsDetected?: (dims: StageDimensions) => void;
+  /** When false, the mix dock is not rendered here — useful on mobile where
+   *  we render it as a separate sibling to achieve a linear flow. */
+  showMixDock?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -48,11 +52,81 @@ export function Stage({
   );
   const [playbackError, setPlaybackError] = useState<string | null>(null);
 
-  // Apply volume levels live
+  // Web Audio routing — iOS Safari silently ignores HTMLMediaElement.volume
+  // for elements it considers "system audio". Routing both through a
+  // GainNode is the only reliable way to honor the user's sliders on
+  // iPhone/iPad. We lazily build the graph on the first play tap so the
+  // AudioContext is created inside a user gesture (browser requirement).
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const videoGainRef = useRef<GainNode | null>(null);
+  const musicGainRef = useRef<GainNode | null>(null);
+  const videoSrcNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const musicSrcNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+
+  const ensureAudioGraph = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (!audioCtxRef.current) {
+      const Ctor: typeof AudioContext | undefined =
+        typeof window !== "undefined"
+          ? window.AudioContext ||
+            (window as unknown as { webkitAudioContext?: typeof AudioContext })
+              .webkitAudioContext
+          : undefined;
+      if (!Ctor) return;
+      try {
+        audioCtxRef.current = new Ctor();
+      } catch {
+        return;
+      }
+    }
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+    if (ctx.state === "suspended") {
+      ctx.resume().catch(() => undefined);
+    }
+    if (!videoSrcNodeRef.current) {
+      try {
+        videoSrcNodeRef.current = ctx.createMediaElementSource(video);
+        const g = ctx.createGain();
+        g.gain.value = clamp01(levels.original);
+        videoSrcNodeRef.current.connect(g).connect(ctx.destination);
+        videoGainRef.current = g;
+      } catch {
+        // already attached in a prior mount — ignore
+      }
+    }
+    const audio = audioRef.current;
+    if (audio && !musicSrcNodeRef.current) {
+      try {
+        musicSrcNodeRef.current = ctx.createMediaElementSource(audio);
+        const g = ctx.createGain();
+        g.gain.value = clamp01(levels.music);
+        musicSrcNodeRef.current.connect(g).connect(ctx.destination);
+        musicGainRef.current = g;
+      } catch {
+        // already attached — ignore
+      }
+    }
+  };
+
+  // Apply volume levels live. We set both the native `volume` (desktop +
+  // Android Chrome respect it) and the Web Audio gain (iOS-safe path).
   useEffect(() => {
     if (videoRef.current) videoRef.current.volume = clamp01(levels.original);
     if (audioRef.current) audioRef.current.volume = clamp01(levels.music);
+    if (videoGainRef.current)
+      videoGainRef.current.gain.value = clamp01(levels.original);
+    if (musicGainRef.current)
+      musicGainRef.current.gain.value = clamp01(levels.music);
   }, [levels.music, levels.original]);
+
+  useEffect(() => {
+    return () => {
+      // Don't close the context on unmount — closing it can throw on iOS if
+      // media elements are still alive. Let GC handle it on page teardown.
+    };
+  }, []);
 
   // When candidate changes, restart audio alignment
   useEffect(() => {
@@ -72,6 +146,9 @@ export function Stage({
     const audio = audioRef.current;
     if (!video) return;
     if (video.paused) {
+      // Build / resume the Web Audio graph inside the user gesture so iOS
+      // lets the GainNodes actually attenuate playback.
+      ensureAudioGraph();
       // On iOS Safari, each media element needs its own user-gesture
       // play() to be unlocked. We start both within this tap handler and
       // surface any rejection so the user sees a real error instead of a
@@ -228,18 +305,35 @@ export function Stage({
         </div>
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-[1.4fr_1fr]">
+      <div
+        className={cn(
+          "grid gap-4",
+          showMixDock ? "md:grid-cols-[1.4fr_1fr]" : ""
+        )}
+      >
         <SourceMeta fileName={fileName} analysis={analysis} />
-        <MixDock
-          selectedCandidate={selectedCandidate}
-          levels={levels}
-          onLevelsChange={onLevelsChange}
-          preset={preset}
-          onPresetChange={onPresetChange}
-        />
+        {showMixDock ? (
+          <MixDock
+            selectedCandidate={selectedCandidate}
+            levels={levels}
+            onLevelsChange={onLevelsChange}
+            preset={preset}
+            onPresetChange={onPresetChange}
+          />
+        ) : null}
       </div>
     </div>
   );
+}
+
+export function StandaloneMixDock(props: {
+  selectedCandidate: Candidate | null;
+  levels: Levels;
+  onLevelsChange: (levels: Levels) => void;
+  preset: MixPresetKey;
+  onPresetChange: (preset: MixPresetKey) => void;
+}) {
+  return <MixDock {...props} />;
 }
 
 function clamp01(n: number) {

@@ -29,7 +29,7 @@ import {
 } from "./models";
 import { ProgressRail, type StudioStep } from "./progress-rail";
 import { Button, SectionLabel, cn } from "./primitives";
-import { Stage } from "./stage";
+import { Stage, StandaloneMixDock } from "./stage";
 import { UploadHero } from "./upload-hero";
 import { IconSparkle, IconUpload } from "./icons";
 
@@ -374,9 +374,15 @@ export function StudioShell() {
         </div>
       ) : null}
 
-      <div className="grid gap-8 md:gap-10 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
-        <div className="space-y-8 md:space-y-10">
-          <section className="space-y-5">
+      {/* Mobile layout: linear flow — Stage (video only) → Direction → Compose
+          → Candidates → Mix → Export. Desktop: two-column layout with Stage
+          + Mix + Export on the left and Direction + Compose + Candidates on
+          the right. We use `display: contents` on the column wrappers at
+          lg+ so children become grid children of the parent, letting us
+          reorder purely with Tailwind order utilities on mobile. */}
+      <div className="flex flex-col gap-8 md:gap-10 lg:grid lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
+        <div className="contents lg:flex lg:flex-col lg:gap-10">
+          <section className="order-1 space-y-5 lg:order-none">
             <SectionLabel number="01" title="Stage" />
             {previewUrl ? (
               <Stage
@@ -390,35 +396,51 @@ export function StudioShell() {
                 onPresetChange={setPreset}
                 initialDimensions={videoDims}
                 onDimensionsDetected={setVideoDims}
+                showMixDock={false}
               />
             ) : null}
           </section>
 
-          <ExportSection
-            canRender={Boolean(selectedCandidateId)}
-            rendererMode={rendererMode}
-            renderStatus={renderStatus === "idle" ? "idle" : renderStatus}
-            renderProgress={renderProgress}
-            outputUrl={outputUrl}
-            busy={busy}
-            onRender={() => void startRender()}
-            videoDims={videoDims}
-          />
+          <section className="order-5 space-y-3 lg:order-none">
+            <SectionLabel number="05" title="Mix" />
+            <StandaloneMixDock
+              selectedCandidate={selectedCandidate}
+              levels={levels}
+              onLevelsChange={setLevels}
+              preset={preset}
+              onPresetChange={setPreset}
+            />
+          </section>
+
+          <div className="order-6 lg:order-none">
+            <ExportSection
+              canRender={Boolean(selectedCandidateId)}
+              rendererMode={rendererMode}
+              renderStatus={renderStatus === "idle" ? "idle" : renderStatus}
+              renderProgress={renderProgress}
+              outputUrl={outputUrl}
+              busy={busy}
+              onRender={() => void startRender()}
+              videoDims={videoDims}
+            />
+          </div>
         </div>
 
-        <div className="space-y-10">
-          <DirectionSection
-            freeText={freeText}
-            vibe={vibe}
-            exclusions={exclusions}
-            vocal={vocal}
-            onFreeText={setFreeText}
-            onVibe={setVibe}
-            onExclusions={setExclusions}
-            onVocal={setVocal}
-          />
+        <div className="contents lg:flex lg:flex-col lg:gap-10">
+          <div className="order-2 lg:order-none">
+            <DirectionSection
+              freeText={freeText}
+              vibe={vibe}
+              exclusions={exclusions}
+              vocal={vocal}
+              onFreeText={setFreeText}
+              onVibe={setVibe}
+              onExclusions={setExclusions}
+              onVocal={setVocal}
+            />
+          </div>
 
-          <div className="rounded-2xl border border-line bg-paper p-5">
+          <div className="order-3 rounded-2xl border border-line bg-paper p-5 lg:order-none">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="font-display text-[18px] tracking-tighter text-ink">
@@ -445,17 +467,19 @@ export function StudioShell() {
             </div>
           </div>
 
-          <CandidatesSection
-            candidates={candidates}
-            selectedId={selectedCandidateId}
-            onSelect={(id) => void chooseCandidate(id)}
-            onNotFit={markNotFit}
-            generationStatus={compositionStatus === "idle" ? "idle" : compositionStatus}
-            generationProgress={compositionProgress}
-            onRegenerate={() => void compose()}
-            canRegenerate={Boolean(compositionId)}
-            busy={busy}
-          />
+          <div className="order-4 lg:order-none">
+            <CandidatesSection
+              candidates={candidates}
+              selectedId={selectedCandidateId}
+              onSelect={(id) => void chooseCandidate(id)}
+              onNotFit={markNotFit}
+              generationStatus={compositionStatus === "idle" ? "idle" : compositionStatus}
+              generationProgress={compositionProgress}
+              onRegenerate={() => void compose()}
+              canRegenerate={Boolean(compositionId)}
+              busy={busy}
+            />
+          </div>
         </div>
       </div>
     </div>

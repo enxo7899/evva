@@ -122,10 +122,15 @@ export class FfmpegMediaRenderer implements MediaRenderer {
       .filter(Boolean)
       .join(",");
 
+    // NOTE: `amix` gained a `normalize` option in ffmpeg 4.4; the binary
+    // bundled by @ffmpeg-installer is older and rejects it. We instead
+    // apply the user-selected music/original levels via `volume` filters
+    // before amix, and let amix's default normalization collapse the sum
+    // — preserving the relative balance the user picked.
     const filter = [
       `[0:a]volume=${req.mix.originalAudioLevel.toFixed(3)}[orig]`,
       `[1:a]${musicChain || "anull"}[mus]`,
-      "[orig][mus]amix=inputs=2:normalize=0:dropout_transition=2[mixout]"
+      "[orig][mus]amix=inputs=2:dropout_transition=2[mixout]"
     ].join(";");
 
     await setState(req.renderJobId, { status: "processing", progress: 0.2 });
