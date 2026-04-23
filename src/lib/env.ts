@@ -13,6 +13,7 @@ export const env = {
   // Replicate (alternate)
   replicateApiToken: value("REPLICATE_API_TOKEN"),
   replicateMusicModel: value("REPLICATE_MUSIC_MODEL", "meta/musicgen"),
+  replicateMusicVersion: value("REPLICATE_MUSIC_VERSION"),
 
   // Video render / export
   mediaRendererProvider: value("MEDIA_RENDERER_PROVIDER", "ffmpeg"),

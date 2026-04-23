@@ -33,9 +33,19 @@ type ReplicatePrediction = {
 export class ReplicateMusicProvider implements MusicProvider {
   readonly name = "replicate" as const;
 
+  /**
+   * Cached version hash for the configured model. Community models like
+   * `meta/musicgen` require calls to POST /v1/predictions with an explicit
+   * `version` field; the `/v1/models/{owner}/{name}/predictions` shortcut
+   * only works for Replicate's "official" models. We resolve the latest
+   * version once per process.
+   */
+  private versionPromise: Promise<string> | null = null;
+
   constructor(
     private readonly token: string,
-    private readonly model: string
+    private readonly model: string,
+    private readonly pinnedVersion: string | undefined
   ) {
     if (!token) {
       throw new Error(
@@ -45,17 +55,57 @@ export class ReplicateMusicProvider implements MusicProvider {
     }
   }
 
+  private async resolveVersion(): Promise<string> {
+    if (this.pinnedVersion) return this.pinnedVersion;
+    if (this.versionPromise) return this.versionPromise;
+
+    this.versionPromise = (async () => {
+      const res = await fetch(`${REPLICATE_API}/models/${this.model}`, {
+        headers: { Authorization: `Token ${this.token}` },
+        cache: "no-store"
+      });
+      if (!res.ok) {
+        const body = await safeReadText(res);
+        throw new Error(
+          `Replicate could not resolve model ${this.model} (${res.status}): ${body.slice(0, 400)}`
+        );
+      }
+      const data = (await res.json()) as {
+        latest_version?: { id?: string };
+      };
+      const id = data.latest_version?.id;
+      if (!id) {
+        throw new Error(
+          `Replicate model ${this.model} has no latest_version. Pin one via REPLICATE_MUSIC_VERSION.`
+        );
+      }
+      return id;
+    })();
+
+    try {
+      return await this.versionPromise;
+    } catch (err) {
+      this.versionPromise = null;
+      throw err;
+    }
+  }
+
   async submit(req: MusicGenerationRequest): Promise<MusicGenerationTicket> {
     const { prompts, titles } = buildPrompts(req.direction, req.candidateCount);
     const duration = clamp(req.targetDurationSec, 5, 30);
     const isInstrumental =
       (req.direction.vocalPreference ?? "instrumental_only") === "instrumental_only";
 
+    // Resolve the model's version once up front so all candidate predictions
+    // share the same hash. Failing here is a hard failure — no point firing
+    // N predictions that will all 404.
+    const version = await this.resolveVersion();
+
     // Fire predictions in parallel. If any single one fails to queue, we
     // still keep the ones that succeeded — the composition will simply
     // produce fewer candidates.
     const settled = await Promise.allSettled(
-      prompts.map((prompt) => this.createPrediction(prompt, duration))
+      prompts.map((prompt) => this.createPrediction(prompt, duration, version))
     );
 
     const providerJobIds: string[] = [];
@@ -179,13 +229,10 @@ export class ReplicateMusicProvider implements MusicProvider {
 
   private async createPrediction(
     prompt: string,
-    durationSec: number
+    durationSec: number,
+    version: string
   ): Promise<ReplicatePrediction> {
-    const url = this.model.includes("/")
-      ? `${REPLICATE_API}/models/${this.model}/predictions`
-      : `${REPLICATE_API}/predictions`;
-
-    const res = await fetch(url, {
+    const res = await fetch(`${REPLICATE_API}/predictions`, {
       method: "POST",
       headers: {
         Authorization: `Token ${this.token}`,
@@ -193,6 +240,7 @@ export class ReplicateMusicProvider implements MusicProvider {
         Prefer: "respond-async"
       },
       body: JSON.stringify({
+        version,
         input: {
           prompt,
           duration: durationSec,
@@ -245,6 +293,7 @@ function clamp(value: number, min: number, max: number): number {
 export function createReplicateProvider(): ReplicateMusicProvider {
   return new ReplicateMusicProvider(
     env.replicateApiToken ?? "",
-    env.replicateMusicModel ?? "meta/musicgen"
+    env.replicateMusicModel ?? "meta/musicgen",
+    env.replicateMusicVersion
   );
 }
