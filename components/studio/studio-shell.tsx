@@ -303,9 +303,9 @@ export function StudioShell() {
     compositionStatus !== "processing";
 
   return (
-    <div className="mx-auto min-h-screen w-full max-w-[1240px] px-6 pb-24 pt-8 md:px-10">
-      <header className="flex flex-wrap items-center justify-between gap-6 pb-8">
-        <div className="flex items-baseline gap-3">
+    <div className="mx-auto min-h-screen w-full max-w-[1240px] px-4 pb-24 pt-6 sm:px-6 sm:pt-8 md:px-10">
+      <header className="mb-6 flex flex-col gap-4 pb-2 md:mb-0 md:flex-row md:flex-wrap md:items-center md:justify-between md:gap-6 md:pb-8">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <span className="font-display text-[22px] leading-none tracking-tightest text-ink">
             Evva
           </span>
@@ -314,7 +314,7 @@ export function StudioShell() {
             <span
               title={config.music.note}
               className={cn(
-                "ml-2 rounded-full border px-2 py-0.5 text-[11px]",
+                "ml-1 rounded-full border px-2 py-0.5 text-[11px]",
                 config.music.mode === "mock"
                   ? "border-accent/30 bg-accent-soft text-accent-ink"
                   : "border-line bg-paper text-ink-2"
@@ -327,6 +327,18 @@ export function StudioShell() {
                   : "Preview music"}
             </span>
           ) : null}
+          <button
+            type="button"
+            onClick={() => {
+              if (previewUrl) URL.revokeObjectURL(previewUrl);
+              setSelectedFile(null);
+              setPreviewUrl(null);
+            }}
+            className="ml-auto inline-flex items-center gap-1.5 text-[12px] text-ink-3 transition hover:text-ink md:hidden"
+          >
+            <IconUpload className="h-3.5 w-3.5" />
+            New reel
+          </button>
         </div>
         <ProgressRail current={currentStep} />
         <button
@@ -336,7 +348,7 @@ export function StudioShell() {
             setSelectedFile(null);
             setPreviewUrl(null);
           }}
-          className="inline-flex items-center gap-2 text-[12px] text-ink-3 transition hover:text-ink"
+          className="hidden items-center gap-2 text-[12px] text-ink-3 transition hover:text-ink md:inline-flex"
         >
           <IconUpload className="h-3.5 w-3.5" />
           New reel
@@ -355,8 +367,8 @@ export function StudioShell() {
         </div>
       ) : null}
 
-      <div className="grid gap-10 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
-        <div className="space-y-10">
+      <div className="grid gap-8 md:gap-10 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
+        <div className="space-y-8 md:space-y-10">
           <section className="space-y-5">
             <SectionLabel number="01" title="Stage" />
             {previewUrl ? (
@@ -383,6 +395,7 @@ export function StudioShell() {
             outputUrl={outputUrl}
             busy={busy}
             onRender={() => void startRender()}
+            videoDims={videoDims}
           />
         </div>
 
@@ -399,7 +412,7 @@ export function StudioShell() {
           />
 
           <div className="rounded-2xl border border-line bg-paper p-5">
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="font-display text-[18px] tracking-tighter text-ink">
                   Compose soundtrack options
@@ -417,6 +430,7 @@ export function StudioShell() {
                 size="md"
                 onClick={() => void compose()}
                 disabled={!canCompose}
+                className="w-full sm:w-auto"
               >
                 <IconSparkle className="h-4 w-4" />
                 {compositionStatus === "completed" ? "Compose again" : "Compose"}

@@ -12,7 +12,8 @@ export function ExportSection({
   renderProgress,
   outputUrl,
   busy,
-  onRender
+  onRender,
+  videoDims
 }: {
   canRender: boolean;
   rendererMode: RendererMode;
@@ -21,6 +22,13 @@ export function ExportSection({
   outputUrl: string | null;
   busy: boolean;
   onRender: () => void;
+  /**
+   * Source video pixel dimensions. Used to render the output preview at its
+   * natural aspect ratio so vertical reels don't get pillarboxed by a
+   * hardcoded 16:9 container. The exported MP4 always preserves source dims
+   * via ffmpeg stream copy; this prop only affects the on-page preview.
+   */
+  videoDims?: { width: number; height: number } | null;
 }) {
   const isRunning = renderStatus === "queued" || renderStatus === "processing";
   const isPreviewOnly = rendererMode === "preview-copy";
@@ -75,11 +83,37 @@ export function ExportSection({
       ) : null}
 
       {outputUrl ? (
-        <div className="overflow-hidden rounded-2xl border border-line bg-black">
-          <video controls src={outputUrl} className="aspect-video w-full" />
-        </div>
+        <OutputPreview outputUrl={outputUrl} videoDims={videoDims ?? null} />
       ) : null}
     </section>
+  );
+}
+
+function OutputPreview({
+  outputUrl,
+  videoDims
+}: {
+  outputUrl: string;
+  videoDims: { width: number; height: number } | null;
+}) {
+  // Respect the source's natural aspect ratio so vertical reels display
+  // edge-to-edge without pillarbox. Portrait gets constrained width so the
+  // player doesn't balloon to full column height on wide screens.
+  const aspectRatio = videoDims ? `${videoDims.width} / ${videoDims.height}` : undefined;
+  const isPortrait = videoDims ? videoDims.height > videoDims.width : false;
+  const containerStyle: React.CSSProperties = {
+    aspectRatio,
+    width: isPortrait ? "min(360px, 100%)" : "100%",
+    maxHeight: "70vh"
+  };
+
+  return (
+    <div
+      className="mx-auto overflow-hidden rounded-2xl border border-line bg-paper"
+      style={containerStyle}
+    >
+      <video controls src={outputUrl} className="block h-full w-full" />
+    </div>
   );
 }
 
