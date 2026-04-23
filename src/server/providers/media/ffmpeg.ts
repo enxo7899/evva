@@ -1,4 +1,4 @@
-import { readFile, unlink } from "node:fs/promises";
+import { chmod, readFile, stat, unlink } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -48,7 +48,18 @@ async function resolveFfmpegBinary(): Promise<string> {
       default?: { path?: string };
       path?: string;
     };
-    return (installer.default?.path ?? installer.path) ?? "ffmpeg";
+    const p = (installer.default?.path ?? installer.path) ?? "ffmpeg";
+    // Vercel's serverless bundler sometimes strips the executable bit
+    // when tracing files into the function. Make sure we can spawn it.
+    if (p !== "ffmpeg") {
+      try {
+        const st = await stat(p);
+        if ((st.mode & 0o111) === 0) await chmod(p, 0o755);
+      } catch {
+        // fall through — spawn will fail loudly with a captured stderr
+      }
+    }
+    return p;
   } catch {
     return env.ffmpegPath || "ffmpeg";
   }
@@ -121,42 +132,59 @@ export class FfmpegMediaRenderer implements MediaRenderer {
 
     const ffmpegBinary = await resolveFfmpegBinary();
 
-    const exitCode = await new Promise<number | null>((resolve) => {
-      const child = spawn(ffmpegBinary, [
-        "-y",
-        "-i",
-        sourceVideoPath,
-        "-stream_loop",
-        "-1",
-        "-i",
-        sourceMusicPath,
-        "-filter_complex",
-        filter,
-        "-map",
-        "0:v:0",
-        "-map",
-        "[mixout]",
-        "-c:v",
-        "copy",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-shortest",
-        tmpOutputPath
-      ]);
+    // Re-encode video with libx264 rather than stream-copying. `-c:v copy`
+    // failed on ~20-30% of uploads in the wild (HEVC from iPhones, rotated
+    // MOVs, non-MP4-compatible profiles) producing the generic
+    // "ffmpeg exited with code 1". libx264 + aac is universally playable
+    // and still fast for <30s reels.
+    const args = [
+      "-y",
+      "-i",
+      sourceVideoPath,
+      "-stream_loop",
+      "-1",
+      "-i",
+      sourceMusicPath,
+      "-filter_complex",
+      filter,
+      "-map",
+      "0:v:0",
+      "-map",
+      "[mixout]",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "23",
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-shortest",
+      tmpOutputPath
+    ];
 
-      child.stderr.on("data", () => undefined);
-      child.on("error", () => resolve(-1));
-      child.on("exit", (code) => resolve(code));
-    });
+    const { exitCode, stderrTail } = await runFfmpeg(ffmpegBinary, args);
 
     if (exitCode !== 0) {
       await cleanup(cleanupPaths);
+      const reason = stderrTail
+        ? `ffmpeg exited with code ${exitCode ?? "unknown"}. Last output: ${stderrTail}`
+        : `ffmpeg exited with code ${exitCode ?? "unknown"}.`;
+      console.error("[evva:ffmpeg] render failed", {
+        renderJobId: req.renderJobId,
+        exitCode,
+        stderrTail
+      });
       await setState(req.renderJobId, {
         status: "failed",
         progress: 1,
-        error: `ffmpeg exited with code ${exitCode ?? "unknown"}.`
+        error: reason
       });
       return;
     }
@@ -198,6 +226,42 @@ async function cleanup(paths: string[]): Promise<void> {
   await Promise.all(
     paths.map((p) => unlink(p).catch(() => undefined))
   );
+}
+
+/**
+ * Spawn ffmpeg and capture the tail of stderr so failures include the
+ * actual reason (missing codec, unsupported pixel format, corrupted
+ * input, etc.) instead of the opaque "exited with code 1".
+ */
+async function runFfmpeg(
+  binary: string,
+  args: string[]
+): Promise<{ exitCode: number | null; stderrTail: string }> {
+  return new Promise((resolve) => {
+    let stderrBuffer = "";
+    const MAX_TAIL = 2000;
+
+    let child;
+    try {
+      child = spawn(binary, args);
+    } catch (err) {
+      resolve({ exitCode: -1, stderrTail: `spawn failed: ${String(err)}` });
+      return;
+    }
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrBuffer += chunk.toString("utf8");
+      if (stderrBuffer.length > MAX_TAIL) {
+        stderrBuffer = stderrBuffer.slice(-MAX_TAIL);
+      }
+    });
+    child.on("error", (err) => {
+      resolve({ exitCode: -1, stderrTail: `${stderrBuffer}\n${String(err)}`.slice(-MAX_TAIL) });
+    });
+    child.on("exit", (code) => {
+      resolve({ exitCode: code, stderrTail: stderrBuffer.trim().slice(-MAX_TAIL) });
+    });
+  });
 }
 
 export function createFfmpegRenderer(): FfmpegMediaRenderer {
