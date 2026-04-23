@@ -46,6 +46,7 @@ export function Stage({
   const [dims, setDims] = useState<StageDimensions | null>(
     initialDimensions ?? null
   );
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
 
   // Apply volume levels live
   useEffect(() => {
@@ -71,8 +72,24 @@ export function Stage({
     const audio = audioRef.current;
     if (!video) return;
     if (video.paused) {
-      void video.play();
-      if (audio && selectedCandidate) void audio.play().catch(() => undefined);
+      // On iOS Safari, each media element needs its own user-gesture
+      // play() to be unlocked. We start both within this tap handler and
+      // surface any rejection so the user sees a real error instead of a
+      // silently-stalled video.
+      const videoPlay = video.play();
+      const audioPlay =
+        audio && selectedCandidate ? audio.play() : Promise.resolve();
+
+      Promise.all([
+        videoPlay ?? Promise.resolve(),
+        audioPlay ?? Promise.resolve()
+      ]).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Pause both so UI state stays consistent with reality.
+        video.pause();
+        audio?.pause();
+        setPlaybackError(msg || "Playback was blocked by the browser.");
+      });
     } else {
       video.pause();
       audio?.pause();
@@ -113,7 +130,11 @@ export function Stage({
           ref={videoRef}
           src={videoUrl}
           playsInline
-          preload="metadata"
+          // "auto" ensures mobile browsers have buffered enough on first
+          // tap that video.play() resolves quickly instead of stalling —
+          // "metadata" was causing visible freezes on 4G/LTE phones.
+          preload="auto"
+          controlsList="nodownload"
           onLoadedMetadata={(e) => {
             const v = e.currentTarget;
             setDuration(v.duration || 0);
@@ -157,7 +178,11 @@ export function Stage({
           <button
             type="button"
             onClick={handlePlayToggle}
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-canvas text-ink transition hover:scale-[1.03]"
+            // Larger hit area on mobile — iOS + Android HIG both ask for
+            // at least 44x44pt. The previous 36px target was tappable but
+            // easy to miss, which is part of why the video appeared not
+            // to play on some phones.
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-canvas text-ink transition hover:scale-[1.03] sm:h-9 sm:w-9"
             aria-label={isPlaying ? "Pause" : "Play"}
           >
             {isPlaying ? <IconPause className="h-4 w-4" /> : <IconPlay className="h-4 w-4" />}
@@ -192,6 +217,16 @@ export function Stage({
           </div>
         ) : null}
       </div>
+
+      {playbackError ? (
+        <div className="rounded-xl border border-accent/30 bg-accent-soft px-4 py-3 text-[13px] text-accent-ink">
+          <p className="font-medium">Couldn&apos;t start playback.</p>
+          <p className="mt-0.5 text-[12px] text-accent-ink/80">{playbackError}</p>
+          <p className="mt-1 text-[12px] text-accent-ink/80">
+            Try tapping play once more, unmute your phone, or reload the page.
+          </p>
+        </div>
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-[1.4fr_1fr]">
         <SourceMeta fileName={fileName} analysis={analysis} />

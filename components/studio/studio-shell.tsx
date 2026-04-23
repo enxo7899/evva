@@ -282,7 +282,14 @@ export function StudioShell() {
       setRenderJobId(renderJob.id);
       setRenderStatus(renderJob.status);
       setRenderProgress(renderJob.progress);
-      setOutputUrl(null);
+      // Our render route now runs ffmpeg synchronously inside the POST,
+      // so the response often already includes a finished `outputUrl`.
+      // Preserve it — the earlier code cleared it to null and hid the
+      // download link even on successful renders.
+      setOutputUrl(renderJob.outputUrl ?? null);
+      if (renderJob.status === "failed") {
+        setErrorMessage(renderJob.error ?? "Render failed.");
+      }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Could not start render.");
     } finally {
