@@ -93,13 +93,10 @@ async function uploadMultipart(payload: {
     method: "POST",
     body: formData
   });
-  const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(
-      typeof data?.error === "string" ? data.error : "Upload failed"
-    );
+    throw new Error(await describeFailure(response, "Multipart upload"));
   }
-  return data as VideoUploadResponse;
+  return (await response.json()) as VideoUploadResponse;
 }
 
 async function uploadDirect(payload: {
@@ -139,13 +136,38 @@ async function uploadDirect(payload: {
       height: payload.height
     })
   });
-  const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(
-      typeof data?.error === "string" ? data.error : "Register failed"
-    );
+    throw new Error(await describeFailure(response, "Register"));
   }
-  return data as VideoUploadResponse;
+  return (await response.json()) as VideoUploadResponse;
+}
+
+/**
+ * Build a user-actionable error message from a failed Response. Tries JSON
+ * first (our routes return `{ error }`), then falls back to text + status
+ * so the real cause (413 request-too-large, HTML error page, etc.) is
+ * visible in the UI instead of a useless "Upload failed".
+ */
+async function describeFailure(response: Response, label: string): Promise<string> {
+  const status = `${response.status} ${response.statusText || ""}`.trim();
+  const raw = await response.text().catch(() => "");
+  if (raw) {
+    try {
+      const data = JSON.parse(raw);
+      const msg =
+        typeof data?.error === "string"
+          ? data.error
+          : typeof data?.message === "string"
+            ? data.message
+            : null;
+      if (msg) return `${label} failed (${status}): ${msg}`;
+    } catch {
+      // not JSON — probably an HTML error page from a platform edge.
+    }
+    const trimmed = raw.replace(/\s+/g, " ").trim().slice(0, 300);
+    return `${label} failed (${status}): ${trimmed || "no response body"}`;
+  }
+  return `${label} failed (${status}).`;
 }
 
 export const createComposition = (payload: {
