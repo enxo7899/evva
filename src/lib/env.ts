@@ -4,7 +4,13 @@ export const env = {
   nodeEnv: value("NODE_ENV", "development"),
 
   // Music generation
-  generatedMusicProvider: value("GENERATED_MUSIC_PROVIDER", "replicate"),
+  generatedMusicProvider: value("GENERATED_MUSIC_PROVIDER", "elevenlabs"),
+
+  // ElevenLabs
+  elevenLabsApiKey: value("ELEVENLABS_API_KEY"),
+  elevenLabsMusicModel: value("ELEVENLABS_MUSIC_MODEL"),
+
+  // Replicate (alternate)
   replicateApiToken: value("REPLICATE_API_TOKEN"),
   replicateMusicModel: value("REPLICATE_MUSIC_MODEL", "meta/musicgen"),
 
@@ -15,8 +21,16 @@ export const env = {
 };
 
 /**
- * True when a real music provider is configured.
- * Today: Replicate. Falls back to the mock provider otherwise.
+ * Resolves which music provider the registry should instantiate. Falls back
+ * to the mock provider when the requested real provider is missing its key.
  */
-export const hasRealMusicProvider =
-  env.generatedMusicProvider === "replicate" && Boolean(env.replicateApiToken);
+export function resolveMusicProviderMode(): "elevenlabs" | "replicate" | "mock" {
+  const requested = (env.generatedMusicProvider ?? "elevenlabs").toLowerCase();
+  if (requested === "elevenlabs") {
+    return env.elevenLabsApiKey ? "elevenlabs" : "mock";
+  }
+  if (requested === "replicate") {
+    return env.replicateApiToken ? "replicate" : "mock";
+  }
+  return "mock";
+}

@@ -1,32 +1,52 @@
 import { spawn } from "node:child_process";
 import { env } from "@/lib/env";
-import type { VideoAnalysis, VideoAsset } from "@/domain/contracts";
+import type {
+  Orientation,
+  VideoAnalysis,
+  VideoAsset
+} from "@/domain/contracts";
 
 /**
  * Honest, minimal analysis. Extracts real facts from the uploaded file
  * via ffprobe when available; otherwise falls back to the client-reported
- * duration. No invented moods, themes, or energy scores.
+ * values. No invented moods, themes, or energy scores.
+ *
+ * Width, height, aspect ratio, and orientation are treated as first-class
+ * data so the UI and render pipeline can respect the reel's native shape
+ * without forcing it into a generic 16:9 box.
  */
 export async function analyzeVideo(asset: VideoAsset): Promise<VideoAnalysis> {
   const probed = await tryFfprobe(asset.sourceUrl).catch(() => null);
 
   const durationSec = probed?.durationSec ?? asset.durationSec;
-  const aspectRatio = probed?.aspectRatio;
+  const width = probed?.width ?? asset.width;
+  const height = probed?.height ?? asset.height;
+  const aspectRatio =
+    probed?.aspectRatio ??
+    asset.aspectRatio ??
+    (width && height ? simplifyAspect(width, height) : undefined);
+  const orientation = deriveOrientation(width, height) ?? asset.orientation;
 
   const parts: string[] = [];
   parts.push(`${durationSec.toFixed(1)}s clip`);
+  if (width && height) parts.push(`${width}×${height}`);
   if (aspectRatio) parts.push(aspectRatio);
   parts.push(asset.mimeType.replace("video/", ""));
 
   return {
     durationSec,
+    width,
+    height,
     aspectRatio,
+    orientation,
     summary: parts.join(" · ")
   };
 }
 
 async function tryFfprobe(publicSourceUrl: string): Promise<{
   durationSec: number;
+  width?: number;
+  height?: number;
   aspectRatio?: string;
 } | null> {
   if (!publicSourceUrl.startsWith("/")) return null;
@@ -76,6 +96,8 @@ async function tryFfprobe(publicSourceUrl: string): Promise<{
           width && height ? simplifyAspect(width, height) : undefined;
         resolve({
           durationSec: Number.isFinite(duration) && duration > 0 ? duration : 0,
+          width,
+          height,
           aspectRatio
         });
       } catch {
@@ -85,8 +107,18 @@ async function tryFfprobe(publicSourceUrl: string): Promise<{
   });
 }
 
-function simplifyAspect(w: number, h: number): string {
+export function simplifyAspect(w: number, h: number): string {
   const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
-  const d = gcd(w, h);
+  const d = gcd(w, h) || 1;
   return `${w / d}:${h / d}`;
+}
+
+export function deriveOrientation(
+  width?: number,
+  height?: number
+): Orientation | undefined {
+  if (!width || !height) return undefined;
+  const ratio = width / height;
+  if (Math.abs(ratio - 1) < 0.02) return "square";
+  return ratio > 1 ? "landscape" : "portrait";
 }

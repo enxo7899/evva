@@ -19,11 +19,17 @@ export type MixPreset =
   | "original-audio-forward";
 
 export type RendererMode = "ffmpeg" | "preview-copy";
-export type MusicProviderMode = "replicate" | "mock";
+export type MusicProviderMode = "elevenlabs" | "replicate" | "mock";
+
+export type Orientation = "portrait" | "landscape" | "square";
 
 /**
  * An uploaded reel tracked for the current session only.
  * Persisted in an in-memory session store; files live under public/uploads/.
+ *
+ * Dimensions are treated as first-class data so both the preview UI and the
+ * render pipeline can respect the reel's native aspect ratio without
+ * letterboxing or pillarboxing.
  */
 export interface VideoAsset {
   id: VideoAssetId;
@@ -32,6 +38,10 @@ export interface VideoAsset {
   durationSec: number;
   mimeType: string;
   sizeBytes: number;
+  width?: number;
+  height?: number;
+  aspectRatio?: string;
+  orientation?: Orientation;
   createdAt: string;
 }
 
@@ -41,7 +51,10 @@ export interface VideoAsset {
  */
 export interface VideoAnalysis {
   durationSec: number;
+  width?: number;
+  height?: number;
   aspectRatio?: string;
+  orientation?: Orientation;
   summary: string;
 }
 

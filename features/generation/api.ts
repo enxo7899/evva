@@ -37,11 +37,19 @@ export const fetchConfig = () => getJson<ConfigResponse>("/api/v1/config");
 export const uploadVideoFile = async (payload: {
   file: File;
   durationSec?: number;
+  width?: number;
+  height?: number;
 }): Promise<VideoUploadResponse> => {
   const formData = new FormData();
   formData.append("file", payload.file);
   if (payload.durationSec && Number.isFinite(payload.durationSec)) {
     formData.append("durationSec", String(payload.durationSec));
+  }
+  if (payload.width && Number.isFinite(payload.width)) {
+    formData.append("width", String(Math.round(payload.width)));
+  }
+  if (payload.height && Number.isFinite(payload.height)) {
+    formData.append("height", String(Math.round(payload.height)));
   }
 
   const response = await fetch("/api/v1/videos/upload", {

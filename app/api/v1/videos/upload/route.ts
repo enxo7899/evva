@@ -61,6 +61,9 @@ export async function POST(request: Request) {
       ? durationFromClient
       : 15;
 
+  const widthFromClient = toPositiveInt(formData.get("width"));
+  const heightFromClient = toPositiveInt(formData.get("height"));
+
   const sourceUrl = `/uploads/${uniqueName}`;
 
   const videoAsset = await registerVideoAsset({
@@ -68,8 +71,16 @@ export async function POST(request: Request) {
     originalFilename: file.name || uniqueName,
     durationSec,
     mimeType: file.type,
-    sizeBytes: file.size
+    sizeBytes: file.size,
+    width: widthFromClient,
+    height: heightFromClient
   });
 
   return NextResponse.json({ videoAsset }, { status: 201 });
+}
+
+function toPositiveInt(value: FormDataEntryValue | null): number | undefined {
+  if (typeof value !== "string") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined;
 }

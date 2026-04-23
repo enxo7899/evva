@@ -6,17 +6,23 @@ export const runtime = "nodejs";
 
 export async function GET() {
   const music: ConfigResponse["music"] =
-    musicProvider.name === "replicate"
+    musicProvider.name === "elevenlabs"
       ? {
-          mode: "replicate",
+          mode: "elevenlabs",
           real: true,
-          note: "Using Replicate (meta/musicgen). Candidates are real generated audio."
+          note: "Using ElevenLabs Music. Candidates are real generated audio."
         }
-      : {
-          mode: "mock",
-          real: false,
-          note: "Mock music provider. Candidates are seeded sine-wave sketches. Set GENERATED_MUSIC_PROVIDER=replicate + REPLICATE_API_TOKEN to enable real generation."
-        };
+      : musicProvider.name === "replicate"
+        ? {
+            mode: "replicate",
+            real: true,
+            note: "Using Replicate (meta/musicgen). Candidates are real generated audio."
+          }
+        : {
+            mode: "mock",
+            real: false,
+            note: "Mock music provider. Candidates are seeded sine-wave sketches. Set GENERATED_MUSIC_PROVIDER=elevenlabs + ELEVENLABS_API_KEY (or replicate + REPLICATE_API_TOKEN) to enable real generation."
+          };
 
   const renderer: ConfigResponse["renderer"] =
     mediaRenderer.mode === "ffmpeg"

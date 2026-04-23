@@ -28,7 +28,7 @@ import {
   type MixPresetKey
 } from "./models";
 import { ProgressRail, type StudioStep } from "./progress-rail";
-import { Button, SectionLabel } from "./primitives";
+import { Button, SectionLabel, cn } from "./primitives";
 import { Stage } from "./stage";
 import { UploadHero } from "./upload-hero";
 import { IconSparkle, IconUpload } from "./icons";
@@ -39,6 +39,7 @@ export function StudioShell() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [videoAssetId, setVideoAssetId] = useState<`vid_${string}` | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [videoDims, setVideoDims] = useState<{ width: number; height: number } | null>(null);
 
   // ---- Direction ----
   const [freeText, setFreeText] = useState("");
@@ -119,6 +120,7 @@ export function StudioShell() {
 
     // Reset downstream state on new source.
     setVideoAssetId(null);
+    setVideoDims(null);
     setCompositionId(null);
     setCompositionStatus("idle");
     setCompositionProgress(0);
@@ -130,13 +132,27 @@ export function StudioShell() {
     setRenderProgress(0);
     setOutputUrl(null);
 
-    const durationSec = await readDuration(objectUrl);
+    const meta = await readVideoMeta(objectUrl);
+    if (meta.width && meta.height) {
+      setVideoDims({ width: meta.width, height: meta.height });
+    }
     if (uploadLock.current) return;
     uploadLock.current = true;
     try {
       setUploading(true);
-      const res = await uploadVideoFile({ file, durationSec });
+      const res = await uploadVideoFile({
+        file,
+        durationSec: meta.durationSec,
+        width: meta.width,
+        height: meta.height
+      });
       setVideoAssetId(res.videoAsset.id);
+      if (res.videoAsset.width && res.videoAsset.height) {
+        setVideoDims({
+          width: res.videoAsset.width,
+          height: res.videoAsset.height
+        });
+      }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Upload failed.");
       setSelectedFile(null);
@@ -294,19 +310,21 @@ export function StudioShell() {
             Evva
           </span>
           <span className="text-[11px] uppercase tracking-[0.18em] text-ink-4">Studio</span>
-          {config?.music?.mode === "mock" ? (
+          {config?.music ? (
             <span
               title={config.music.note}
-              className="ml-2 rounded-full border border-accent/30 bg-accent-soft px-2 py-0.5 text-[11px] text-accent-ink"
+              className={cn(
+                "ml-2 rounded-full border px-2 py-0.5 text-[11px]",
+                config.music.mode === "mock"
+                  ? "border-accent/30 bg-accent-soft text-accent-ink"
+                  : "border-line bg-paper text-ink-2"
+              )}
             >
-              Preview music
-            </span>
-          ) : config?.music?.mode === "replicate" ? (
-            <span
-              title={config.music.note}
-              className="ml-2 rounded-full border border-line bg-paper px-2 py-0.5 text-[11px] text-ink-2"
-            >
-              Replicate
+              {config.music.mode === "elevenlabs"
+                ? "ElevenLabs"
+                : config.music.mode === "replicate"
+                  ? "Replicate"
+                  : "Preview music"}
             </span>
           ) : null}
         </div>
@@ -351,6 +369,8 @@ export function StudioShell() {
                 onLevelsChange={setLevels}
                 preset={preset}
                 onPresetChange={setPreset}
+                initialDimensions={videoDims}
+                onDimensionsDetected={setVideoDims}
               />
             ) : null}
           </section>
@@ -423,13 +443,23 @@ export function StudioShell() {
 
 // ---- helpers ----
 
-async function readDuration(objectUrl: string): Promise<number> {
+async function readVideoMeta(objectUrl: string): Promise<{
+  durationSec: number;
+  width?: number;
+  height?: number;
+}> {
   return new Promise((resolve) => {
     const v = document.createElement("video");
     v.preload = "metadata";
     v.src = objectUrl;
-    v.onloadedmetadata = () => resolve(Number(v.duration.toFixed(2)) || 15);
-    v.onerror = () => resolve(15);
+    v.onloadedmetadata = () => {
+      resolve({
+        durationSec: Number(v.duration.toFixed(2)) || 15,
+        width: v.videoWidth || undefined,
+        height: v.videoHeight || undefined
+      });
+    };
+    v.onerror = () => resolve({ durationSec: 15 });
   });
 }
 

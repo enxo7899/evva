@@ -9,12 +9,14 @@ This repository is the **first real MVP**. It is deliberately simple:
 
 - **No database.** Single-session, in-memory state. Files live on the local
   filesystem (`public/uploads/`, `public/generated/`, `public/renders/`).
-- **Real music provider.** [Replicate](https://replicate.com) (meta/musicgen)
-  is the primary path. A clearly-labeled mock fallback exists for local runs
-  without an API key.
+- **Real music provider.** [ElevenLabs Music](https://elevenlabs.io/music)
+  is the primary path (Replicate `meta/musicgen` is available as an
+  alternate). A clearly-labeled mock fallback exists for local runs without
+  an API key.
 - **Real video export.** ffmpeg bakes the selected track + your mix levels
-  into an MP4. A clearly-labeled preview-copy fallback exists for environments
-  without ffmpeg.
+  into an MP4 **at the source reel's own aspect ratio** — no letterbox, no
+  pillarbox, no black padding. A clearly-labeled preview-copy fallback
+  exists for environments without ffmpeg.
 - **Real upload, real job lifecycle, real downloadable artifact.**
 
 ## Stack
@@ -98,7 +100,9 @@ cp .env.example .env.local
 
 | Variable                      | Default            | Notes |
 |-------------------------------|--------------------|-------|
-| `GENERATED_MUSIC_PROVIDER`    | `replicate`        | Set to `mock` for no-key local runs. |
+| `GENERATED_MUSIC_PROVIDER`    | `elevenlabs`       | `elevenlabs`, `replicate`, or `mock`. Falls back to `mock` if the selected real provider's key is missing. |
+| `ELEVENLABS_API_KEY`          | —                  | Required when provider is `elevenlabs`. Create at https://elevenlabs.io/app/settings/api-keys. Account must have Music API access. |
+| `ELEVENLABS_MUSIC_MODEL`      | —                  | Optional model override. Leave blank for ElevenLabs' default. |
 | `REPLICATE_API_TOKEN`         | —                  | Required when provider is `replicate`. Create at https://replicate.com/account/api-tokens. |
 | `REPLICATE_MUSIC_MODEL`       | `meta/musicgen`    | Replicate model slug. |
 | `MEDIA_RENDERER_PROVIDER`     | `ffmpeg`           | Set to `preview-copy` if ffmpeg isn't installed. |
@@ -116,10 +120,10 @@ cd evva
 npm install
 cp .env.example .env.local
 
-# (Recommended) Real music + real render:
-# .env.local:
-#   GENERATED_MUSIC_PROVIDER=replicate
-#   REPLICATE_API_TOKEN=<your token>
+# Recommended: real music + real render.
+# Edit .env.local and set:
+#   GENERATED_MUSIC_PROVIDER=elevenlabs
+#   ELEVENLABS_API_KEY=<your key>
 #   MEDIA_RENDERER_PROVIDER=ffmpeg
 
 # Install ffmpeg + ffprobe for the real render path:
@@ -129,6 +133,17 @@ brew install ffmpeg           # macOS
 npm run dev
 open http://localhost:3000
 ```
+
+### Getting an ElevenLabs key
+
+1. Create an account at https://elevenlabs.io.
+2. Subscribe to a plan that includes Music API access (the free tier does
+   not include Music at the time of writing — Creator and above do).
+3. Visit https://elevenlabs.io/app/settings/api-keys and click **Create
+   API Key**. Scope it to your workspace, copy the value.
+4. Paste it into `.env.local` as `ELEVENLABS_API_KEY=...`.
+5. Restart `npm run dev`. The Studio header will change from
+   "Preview music" to "ElevenLabs" once the key is detected.
 
 ### No-key local mode
 

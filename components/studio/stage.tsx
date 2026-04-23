@@ -8,6 +8,11 @@ import { Button, Chip, cn } from "./primitives";
 
 type Levels = { music: number; original: number };
 
+export type StageDimensions = {
+  width: number;
+  height: number;
+};
+
 export function Stage({
   videoUrl,
   fileName,
@@ -16,7 +21,9 @@ export function Stage({
   levels,
   onLevelsChange,
   preset,
-  onPresetChange
+  onPresetChange,
+  initialDimensions,
+  onDimensionsDetected
 }: {
   videoUrl: string;
   fileName: string;
@@ -26,12 +33,19 @@ export function Stage({
   onLevelsChange: (levels: Levels) => void;
   preset: MixPresetKey;
   onPresetChange: (preset: MixPresetKey) => void;
+  /** Known dimensions from the server/client metadata pass, if any. */
+  initialDimensions?: StageDimensions | null;
+  /** Fires once we know the video's natural dimensions. */
+  onDimensionsDetected?: (dims: StageDimensions) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [dims, setDims] = useState<StageDimensions | null>(
+    initialDimensions ?? null
+  );
 
   // Apply volume levels live
   useEffect(() => {
@@ -78,15 +92,37 @@ export function Stage({
 
   const progress = duration > 0 ? currentTime / duration : 0;
 
+  // Honest aspect layout: we always render the video at its natural ratio —
+  // no forced 16:9 box, no pillarboxing, no letterboxing. Vertical reels read
+  // as vertical, landscape reads as landscape, square as square.
+  const aspectRatio = dims ? `${dims.width} / ${dims.height}` : undefined;
+  const isPortrait = dims ? dims.height > dims.width : false;
+  const stageMaxWidth = isPortrait ? "min(420px, 100%)" : "100%";
+
   return (
     <div className="space-y-5">
-      <div className="relative overflow-hidden rounded-2xl border border-line bg-black">
+      <div
+        className="relative mx-auto overflow-hidden rounded-2xl border border-line bg-paper"
+        style={{
+          aspectRatio,
+          width: stageMaxWidth,
+          maxHeight: "72vh"
+        }}
+      >
         <video
           ref={videoRef}
           src={videoUrl}
           playsInline
           preload="metadata"
-          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+          onLoadedMetadata={(e) => {
+            const v = e.currentTarget;
+            setDuration(v.duration || 0);
+            if (v.videoWidth > 0 && v.videoHeight > 0) {
+              const next = { width: v.videoWidth, height: v.videoHeight };
+              setDims(next);
+              onDimensionsDetected?.(next);
+            }
+          }}
           onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
           onPlay={() => {
             setIsPlaying(true);
@@ -104,7 +140,7 @@ export function Stage({
             const loopLen = selectedCandidate.durationSec || audio.duration || 0;
             audio.currentTime = loopLen > 0 ? e.currentTarget.currentTime % loopLen : 0;
           }}
-          className="aspect-video w-full bg-black object-contain"
+          className="block h-full w-full"
         />
 
         {selectedCandidate ? (
