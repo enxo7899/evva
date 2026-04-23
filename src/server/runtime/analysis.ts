@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { unlink } from "node:fs/promises";
 import { env } from "@/lib/env";
+import { fetchToTmp } from "./storage";
 import type {
   Orientation,
   VideoAnalysis,
@@ -43,24 +45,44 @@ export async function analyzeVideo(asset: VideoAsset): Promise<VideoAnalysis> {
   };
 }
 
-async function tryFfprobe(publicSourceUrl: string): Promise<{
+async function resolveFfprobeBinary(): Promise<string> {
+  if (env.ffprobePath && env.ffprobePath !== "ffprobe") return env.ffprobePath;
+  try {
+    const installer = (await import("@ffprobe-installer/ffprobe")) as unknown as {
+      default?: { path?: string };
+      path?: string;
+    };
+    return (installer.default?.path ?? installer.path) ?? "ffprobe";
+  } catch {
+    return env.ffprobePath || "ffprobe";
+  }
+}
+
+async function tryFfprobe(sourceUrl: string): Promise<{
   durationSec: number;
   width?: number;
   height?: number;
   aspectRatio?: string;
 } | null> {
-  if (!publicSourceUrl.startsWith("/")) return null;
+  let fileAbsPath: string;
+  let cleanupTmp = false;
+  try {
+    fileAbsPath = await fetchToTmp(sourceUrl, ".mp4");
+    // fetchToTmp returns a /tmp path only for remote URLs; for local /public
+    // URLs it returns the public abs path directly — no cleanup needed.
+    cleanupTmp = !sourceUrl.startsWith("/");
+  } catch {
+    return null;
+  }
 
-  const path = await import("node:path");
-  const fileAbsPath = path.join(
-    process.cwd(),
-    "public",
-    publicSourceUrl.replace(/^\//, "")
-  );
+  const ffprobe = await resolveFfprobeBinary();
 
-  const ffprobe = env.ffprobePath || "ffprobe";
-
-  return new Promise((resolve) => {
+  const result = await new Promise<{
+    durationSec: number;
+    width?: number;
+    height?: number;
+    aspectRatio?: string;
+  } | null>((resolve) => {
     const child = spawn(ffprobe, [
       "-v",
       "error",
@@ -105,6 +127,12 @@ async function tryFfprobe(publicSourceUrl: string): Promise<{
       }
     });
   });
+
+  if (cleanupTmp) {
+    unlink(fileAbsPath).catch(() => undefined);
+  }
+
+  return result;
 }
 
 export function simplifyAspect(w: number, h: number): string {

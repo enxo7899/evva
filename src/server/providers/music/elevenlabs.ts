@@ -1,6 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { env } from "@/lib/env";
+import { kvGet, kvSet } from "@/server/runtime/kv";
+import { putBuffer } from "@/server/runtime/storage";
 import { buildPrompts, deriveTags } from "./prompting";
 import type {
   MusicGenerationRequest,
@@ -16,37 +16,24 @@ const MUSIC_ENDPOINT = "/v1/music";
 /**
  * Real music generation via ElevenLabs Music.
  *
- * ElevenLabs' music endpoint is synchronous: the request blocks until the
- * track is generated, then returns the audio bytes directly. To keep the
- * pollable job shape the rest of Evva expects, we:
+ * ElevenLabs' /v1/music endpoint is synchronous — the request blocks until
+ * the track is generated, then returns audio bytes. On Vercel serverless we
+ * cannot reliably do fire-and-forget background work across invocations, so
+ * `submit` awaits all N candidates to completion, uploads each to Blob
+ * storage, and persists the results in KV before returning.
  *
- *   - `submit`: kick off N fetches in parallel (one per candidate), save
- *     their in-flight promises in a process-local map, and return a
- *     ticket that references them by id.
- *   - `getStatus`: report how many of the N candidates have resolved.
- *   - `fetchResults`: return the already-written audio file URLs.
- *
- * Audio is saved under public/generated/<candidateId>.mp3 so the browser
- * can stream it directly.
+ * `getStatus` / `fetchResults` then simply read from KV — they are fast and
+ * stateless across containers.
  */
 
-type JobState = {
-  completed: boolean;
-  failed: boolean;
-  error?: string;
-  resultUrl?: string;
-  resultDurationSec: number;
-  prompt: string;
-  title: string;
-  isInstrumental: boolean;
+type JobBucket = {
+  results: MusicGenerationResult[];
+  totalFailed: number;
+  totalRequested: number;
+  lastError?: string;
 };
 
-type G = typeof globalThis & {
-  __evvaElevenJobs?: Map<string, JobState>;
-};
-const g = globalThis as G;
-const jobs: Map<string, JobState> =
-  g.__evvaElevenJobs ?? (g.__evvaElevenJobs = new Map());
+const bucketKey = (providerJobId: string) => `el-music:${providerJobId}`;
 
 export class ElevenLabsMusicProvider implements MusicProvider {
   readonly name = "elevenlabs" as const;
@@ -74,40 +61,45 @@ export class ElevenLabsMusicProvider implements MusicProvider {
       (_, i) => `el_${req.compositionId}_${i + 1}`
     );
 
-    const outputDir = path.join(process.cwd(), "public", "generated");
-    await mkdir(outputDir, { recursive: true });
+    // Fire every generation in parallel. Each resolved promise yields a
+    // ready-to-serve MusicGenerationResult with an audio URL (Blob CDN or
+    // /public fallback). Rejections become per-candidate failures; as long
+    // as at least one succeeds, we still return a viable ticket.
+    const settled = await Promise.allSettled(
+      prompts.map((prompt, i) =>
+        this.generateOne({
+          jobId: providerJobIds[i],
+          prompt,
+          title: titles[i] ?? `Track ${i + 1}`,
+          durationSec,
+          musicLengthMs,
+          isInstrumental
+        })
+      )
+    );
 
-    // Seed job state, then fire-and-forget the generation requests. The
-    // service polls getStatus to learn when everything is done.
-    prompts.forEach((prompt, i) => {
-      jobs.set(providerJobIds[i], {
-        completed: false,
-        failed: false,
-        resultDurationSec: durationSec,
-        prompt,
-        title: titles[i] ?? `Track ${i + 1}`,
-        isInstrumental
-      });
-    });
+    const results: MusicGenerationResult[] = [];
+    let totalFailed = 0;
+    let lastError: string | undefined;
 
-    prompts.forEach((prompt, i) => {
-      const jobId = providerJobIds[i];
-      void this.generateOne({
-        jobId,
-        prompt,
-        musicLengthMs,
-        outputDir
-      }).catch((error) => {
-        const state = jobs.get(jobId);
-        if (!state) return;
-        jobs.set(jobId, {
-          ...state,
-          failed: true,
-          completed: true,
-          error: error instanceof Error ? error.message : "Generation failed"
-        });
-      });
-    });
+    for (const s of settled) {
+      if (s.status === "fulfilled") {
+        results.push(s.value);
+      } else {
+        totalFailed++;
+        lastError = String(s.reason);
+      }
+    }
+
+    const bucket: JobBucket = {
+      results,
+      totalFailed,
+      totalRequested: providerJobIds.length,
+      lastError
+    };
+    await Promise.all(
+      providerJobIds.map((id) => kvSet(bucketKey(id), bucket, 60 * 60 * 6))
+    );
 
     return {
       providerJobIds,
@@ -119,66 +111,23 @@ export class ElevenLabsMusicProvider implements MusicProvider {
   }
 
   async getStatus(ticket: MusicGenerationTicket): Promise<MusicGenerationStatus> {
-    let completed = 0;
-    let failed = 0;
-    let lastError: string | undefined;
-
-    for (const id of ticket.providerJobIds) {
-      const state = jobs.get(id);
-      if (!state) {
-        failed++;
-        lastError = "Job state missing";
-        continue;
-      }
-      if (state.completed) completed++;
-      if (state.failed) {
-        failed++;
-        lastError = state.error ?? lastError;
-      }
+    const bucket = await kvGet<JobBucket>(bucketKey(ticket.providerJobIds[0]));
+    if (!bucket) {
+      return { status: "failed", progress: 1, error: "ElevenLabs job not found." };
     }
-
-    const total = ticket.providerJobIds.length;
-    const succeeded = completed - failed;
-
-    if (failed === total) {
+    if (bucket.results.length === 0) {
       return {
         status: "failed",
         progress: 1,
-        error: lastError ?? "All ElevenLabs generations failed."
+        error: bucket.lastError ?? "All ElevenLabs generations failed."
       };
     }
-
-    if (completed === total) {
-      return { status: "completed", progress: 1 };
-    }
-
-    return {
-      status: succeeded > 0 || completed > 0 ? "processing" : "queued",
-      progress: Number((0.1 + (completed / total) * 0.85).toFixed(2))
-    };
+    return { status: "completed", progress: 1 };
   }
 
   async fetchResults(ticket: MusicGenerationTicket): Promise<MusicGenerationResult[]> {
-    const results: MusicGenerationResult[] = [];
-
-    for (const id of ticket.providerJobIds) {
-      const state = jobs.get(id);
-      if (!state || !state.completed || state.failed || !state.resultUrl) continue;
-
-      const suffix = state.prompt.split(",").slice(-3).join(",");
-
-      results.push({
-        externalId: id,
-        title: state.title,
-        prompt: state.prompt,
-        audioUrl: state.resultUrl,
-        durationSec: state.resultDurationSec,
-        tags: deriveTags({}, suffix),
-        isInstrumental: state.isInstrumental
-      });
-    }
-
-    return results;
+    const bucket = await kvGet<JobBucket>(bucketKey(ticket.providerJobIds[0]));
+    return bucket?.results ?? [];
   }
 
   // ---- internals ----
@@ -186,9 +135,11 @@ export class ElevenLabsMusicProvider implements MusicProvider {
   private async generateOne(input: {
     jobId: string;
     prompt: string;
+    title: string;
+    durationSec: number;
     musicLengthMs: number;
-    outputDir: string;
-  }): Promise<void> {
+    isInstrumental: boolean;
+  }): Promise<MusicGenerationResult> {
     const body: Record<string, unknown> = {
       prompt: input.prompt,
       music_length_ms: input.musicLengthMs
@@ -213,17 +164,23 @@ export class ElevenLabsMusicProvider implements MusicProvider {
     }
 
     const buffer = Buffer.from(await res.arrayBuffer());
-    const filename = `${input.jobId}.mp3`;
-    await writeFile(path.join(input.outputDir, filename), buffer);
+    const stored = await putBuffer(
+      `generated/${input.jobId}.mp3`,
+      buffer,
+      "audio/mpeg"
+    );
 
-    const state = jobs.get(input.jobId);
-    if (!state) return;
-    jobs.set(input.jobId, {
-      ...state,
-      completed: true,
-      failed: false,
-      resultUrl: `/generated/${filename}`
-    });
+    const suffix = input.prompt.split(",").slice(-3).join(",");
+
+    return {
+      externalId: input.jobId,
+      title: input.title,
+      prompt: input.prompt,
+      audioUrl: stored.url,
+      durationSec: input.durationSec,
+      tags: deriveTags({}, suffix),
+      isInstrumental: input.isInstrumental
+    };
   }
 }
 

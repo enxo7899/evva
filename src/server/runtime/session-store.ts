@@ -1,61 +1,35 @@
 import type { CompositionJob, RenderJob, VideoAsset } from "@/domain/contracts";
+import { kvGet, kvSet, kvUpdate } from "./kv";
 
 /**
- * Single-process in-memory store for the current MVP.
- * Restart == new session. No cross-session persistence by design.
+ * Async session store backed by KV (Vercel KV / Upstash in production, an
+ * in-memory Map in local dev — see `./kv`).
  *
- * If we later add accounts / history, swap these three caches for a
- * proper repository implementation without changing call sites.
+ * All methods are async: this is a real over-the-network store when deployed,
+ * and services must await accordingly. The interface is intentionally narrow
+ * — get/set/update — so we don't accumulate Redis primitives leaking into the
+ * domain layer.
  */
 
-const DEFAULT_TTL_MS = 1000 * 60 * 60 * 6; // 6h per entry
+const TTL_SEC = 60 * 60 * 6; // 6h per entry
 
-type Entry<T> = { value: T; expiresAt: number };
+class AsyncStore<T> {
+  constructor(private readonly prefix: string) {}
 
-class Store<T> {
-  private readonly data = new Map<string, Entry<T>>();
-
-  set(key: string, value: T, ttlMs: number = DEFAULT_TTL_MS): T {
-    this.data.set(key, { value, expiresAt: Date.now() + ttlMs });
+  async set(id: string, value: T): Promise<T> {
+    await kvSet(`${this.prefix}:${id}`, value, TTL_SEC);
     return value;
   }
 
-  get(key: string): T | null {
-    const entry = this.data.get(key);
-    if (!entry) return null;
-    if (entry.expiresAt < Date.now()) {
-      this.data.delete(key);
-      return null;
-    }
-    return entry.value;
+  async get(id: string): Promise<T | null> {
+    return kvGet<T>(`${this.prefix}:${id}`);
   }
 
-  update(key: string, mutator: (prev: T) => T): T | null {
-    const current = this.get(key);
-    if (!current) return null;
-    return this.set(key, mutator(current));
-  }
-
-  delete(key: string): void {
-    this.data.delete(key);
+  async update(id: string, mutate: (prev: T) => T): Promise<T | null> {
+    return kvUpdate<T>(`${this.prefix}:${id}`, mutate, TTL_SEC);
   }
 }
 
-// Module-level singletons. In dev, Next.js HMR may re-evaluate modules;
-// we cache on globalThis to survive that.
-type G = typeof globalThis & {
-  __evvaVideos?: Store<VideoAsset>;
-  __evvaCompositions?: Store<CompositionJob>;
-  __evvaRenders?: Store<RenderJob>;
-};
-
-const g = globalThis as G;
-
-export const videoStore: Store<VideoAsset> =
-  g.__evvaVideos ?? (g.__evvaVideos = new Store<VideoAsset>());
-
-export const compositionStore: Store<CompositionJob> =
-  g.__evvaCompositions ?? (g.__evvaCompositions = new Store<CompositionJob>());
-
-export const renderStore: Store<RenderJob> =
-  g.__evvaRenders ?? (g.__evvaRenders = new Store<RenderJob>());
+export const videoStore = new AsyncStore<VideoAsset>("vid");
+export const compositionStore = new AsyncStore<CompositionJob>("cmp");
+export const renderStore = new AsyncStore<RenderJob>("rnd");

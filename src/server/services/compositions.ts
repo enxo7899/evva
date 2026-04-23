@@ -42,7 +42,7 @@ export async function registerVideoAsset(
     createdAt: new Date().toISOString(),
     ...input
   };
-  videoStore.set(id, asset);
+  await videoStore.set(id, asset);
   return asset;
 }
 
@@ -55,7 +55,7 @@ export async function createComposition(input: {
   direction?: Direction;
   candidateCount?: number;
 }): Promise<CompositionJob> {
-  const video = videoStore.get(input.videoAssetId);
+  const video = await videoStore.get(input.videoAssetId);
   if (!video) throw new Error("Video not found. Upload it first.");
 
   const analysis = await analyzeVideo(video);
@@ -86,14 +86,14 @@ export async function createComposition(input: {
     _ticket: ticket
   };
 
-  compositionStore.set(compositionId, job);
+  await compositionStore.set(compositionId, job);
   return toPublic(job);
 }
 
 export async function getComposition(
   id: CompositionId
 ): Promise<CompositionJob | null> {
-  const current = compositionStore.get(id) as Internal | null;
+  const current = (await compositionStore.get(id)) as Internal | null;
   if (!current) return null;
 
   // Terminal states short-circuit.
@@ -130,7 +130,7 @@ export async function getComposition(
     next = { ...next, candidates };
   }
 
-  compositionStore.set(id, next);
+  await compositionStore.set(id, next);
   return toPublic(next);
 }
 
@@ -138,7 +138,7 @@ export async function selectCandidate(input: {
   compositionId: CompositionId;
   candidateId: CandidateId;
 }): Promise<CompositionJob> {
-  const job = compositionStore.get(input.compositionId) as Internal | null;
+  const job = (await compositionStore.get(input.compositionId)) as Internal | null;
   if (!job) throw new Error("Composition not found.");
   const candidate = job.candidates.find((c) => c.id === input.candidateId);
   if (!candidate) throw new Error("Candidate not found on this composition.");
@@ -148,6 +148,6 @@ export async function selectCandidate(input: {
     selectedCandidateId: input.candidateId,
     updatedAt: new Date().toISOString()
   };
-  compositionStore.set(input.compositionId, next);
+  await compositionStore.set(input.compositionId, next);
   return toPublic(next);
 }

@@ -46,6 +46,16 @@ export interface ConfigResponse {
     mixesAudio: boolean;
     note: string;
   };
+  upload: {
+    /**
+     * "direct" = browser uploads straight to Vercel Blob using a short-lived
+     *            token (required on Vercel for files larger than ~4.5MB).
+     * "multipart" = browser POSTs FormData to /api/v1/videos/upload. Used in
+     *               local dev where the Node server has no body-size cap.
+     */
+    mode: "direct" | "multipart";
+    maxBytes: number;
+  };
 }
 
 export interface ErrorResponse {

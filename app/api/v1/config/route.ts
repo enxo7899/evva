@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import type { ConfigResponse } from "@/contracts/api";
 import { mediaRenderer, musicProvider } from "@/server/providers/registry";
+import { hasBlobStore } from "@/server/runtime/storage";
 
 export const runtime = "nodejs";
+
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 export async function GET() {
   const music: ConfigResponse["music"] =
@@ -37,6 +40,11 @@ export async function GET() {
           note: "Preview-copy export. The live in-browser mix is the authoritative audition; install ffmpeg and set MEDIA_RENDERER_PROVIDER=ffmpeg to bake a real mixed file."
         };
 
-  const body: ConfigResponse = { music, renderer };
+  const upload: ConfigResponse["upload"] = {
+    mode: hasBlobStore() ? "direct" : "multipart",
+    maxBytes: MAX_UPLOAD_BYTES
+  };
+
+  const body: ConfigResponse = { music, renderer, upload };
   return NextResponse.json(body);
 }

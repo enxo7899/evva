@@ -4,6 +4,9 @@ import { createComposition } from "@/server/services/compositions";
 import type { VideoAssetId } from "@/domain/ids";
 
 export const runtime = "nodejs";
+// ElevenLabs / Replicate music generation can block for up to ~60s when we
+// synchronously generate N candidates in parallel. Pro plan supports 300s.
+export const maxDuration = 300;
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);

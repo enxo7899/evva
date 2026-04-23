@@ -18,7 +18,7 @@ export async function createRenderJob(input: {
   compositionId: CompositionId;
   mix: MixSettings;
 }): Promise<RenderJob> {
-  const composition = compositionStore.get(input.compositionId);
+  const composition = await compositionStore.get(input.compositionId);
   if (!composition) throw new Error("Composition not found.");
   if (!composition.selectedCandidateId) {
     throw new Error("Select a candidate before rendering.");
@@ -28,7 +28,7 @@ export async function createRenderJob(input: {
   );
   if (!candidate) throw new Error("Selected candidate is no longer available.");
 
-  const video = videoStore.get(composition.videoAssetId);
+  const video = await videoStore.get(composition.videoAssetId);
   if (!video) throw new Error("Source video is no longer available.");
 
   const id = createId("rnd") as RenderJobId;
@@ -47,33 +47,47 @@ export async function createRenderJob(input: {
     updatedAt: now
   };
 
-  renderStore.set(id, job);
+  await renderStore.set(id, job);
 
-  // Fire and forget — provider updates its own internal state, we poll.
-  void mediaRenderer
-    .enqueue({
+  // Run rendering synchronously before returning. On Vercel, serverless
+  // invocations can't reliably continue background work after a response,
+  // so we block here. For a 5–30s reel the ffmpeg stream-copy + amix
+  // typically completes in a few seconds.
+  try {
+    await mediaRenderer.enqueue({
       renderJobId: id,
       videoSourceUrl: video.sourceUrl,
       generatedAudioUrl: candidate.audioUrl,
       mix: input.mix
-    })
-    .catch((err) => {
-      const current = renderStore.get(id);
-      if (!current) return;
-      renderStore.set(id, {
-        ...current,
-        status: "failed",
-        progress: 1,
-        error: err instanceof Error ? err.message : "Renderer rejected the job.",
-        updatedAt: new Date().toISOString()
-      });
     });
+  } catch (err) {
+    const failed: RenderJob = {
+      ...job,
+      status: "failed",
+      progress: 1,
+      error: err instanceof Error ? err.message : "Renderer rejected the job.",
+      updatedAt: new Date().toISOString()
+    };
+    await renderStore.set(id, failed);
+    return failed;
+  }
 
-  return job;
+  // Read final provider status and persist before returning.
+  const final = await mediaRenderer.getStatus(id);
+  const updated: RenderJob = {
+    ...job,
+    status: final.status,
+    progress: final.progress,
+    outputUrl: final.outputUrl ?? job.outputUrl,
+    error: final.error ?? job.error,
+    updatedAt: new Date().toISOString()
+  };
+  await renderStore.set(id, updated);
+  return updated;
 }
 
 export async function getRenderJob(id: RenderJobId): Promise<RenderJob | null> {
-  const current = renderStore.get(id);
+  const current = await renderStore.get(id);
   if (!current) return null;
 
   if (current.status === "completed" || current.status === "failed") {
@@ -90,6 +104,6 @@ export async function getRenderJob(id: RenderJobId): Promise<RenderJob | null> {
     updatedAt: new Date().toISOString()
   };
 
-  renderStore.set(id, updated);
+  await renderStore.set(id, updated);
   return updated;
 }

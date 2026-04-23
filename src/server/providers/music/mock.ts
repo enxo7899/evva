@@ -1,5 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { kvGet, kvSet } from "@/server/runtime/kv";
+import { putBuffer } from "@/server/runtime/storage";
 import { buildPrompts, deriveTags } from "./prompting";
 import type {
   MusicGenerationRequest,
@@ -12,24 +12,23 @@ import type {
 /**
  * Local-only fallback provider.
  *
- * Writes short seeded sine-wave WAV stems to public/generated/ so the full
- * UX (selection, mix preview, render) is exercisable end-to-end without any
- * external API key. Candidates will NOT sound musical — the UI labels this
- * explicitly as "preview mode" in the config banner.
+ * Writes short seeded sine-wave WAV stems via the storage abstraction (Blob
+ * in production, `public/generated/` in dev) so the full UX (selection, mix
+ * preview, render) is exercisable end-to-end without any music API key.
+ * Candidates will NOT sound musical — the UI labels this explicitly as
+ * "preview mode" in the config banner.
+ *
+ * Because generation is synchronous and fast, `submit` completes everything
+ * before returning. Job state is persisted in KV so subsequent `getStatus`
+ * / `fetchResults` calls (which may land on a different serverless
+ * container) still see the results.
  */
 
 type MockJobState = {
-  createdAtMs: number;
-  processingAtMs: number;
-  completedAtMs: number;
   results: MusicGenerationResult[];
 };
 
-type G = typeof globalThis & {
-  __evvaMockJobs?: Map<string, MockJobState>;
-};
-const g = globalThis as G;
-const jobs: Map<string, MockJobState> = g.__evvaMockJobs ?? (g.__evvaMockJobs = new Map());
+const stateKey = (providerJobId: string) => `mock-music:${providerJobId}`;
 
 export class MockMusicProvider implements MusicProvider {
   readonly name = "mock" as const;
@@ -42,26 +41,15 @@ export class MockMusicProvider implements MusicProvider {
       (_, i) => `mock_${req.compositionId}_${i + 1}`
     );
 
-    const createdAtMs = Date.now();
-    const processingAtMs = createdAtMs + 600;
-    const completedAtMs = processingAtMs + 1800;
-
-    const outputDir = path.join(process.cwd(), "public", "generated");
-    await mkdir(outputDir, { recursive: true });
-
     const results: MusicGenerationResult[] = [];
 
     for (let i = 0; i < providerJobIds.length; i++) {
-      const localName = `${providerJobIds[i]}.wav`;
-      const filePath = path.join(outputDir, localName);
+      const pathname = `generated/${providerJobIds[i]}.wav`;
       const durationSec = Math.min(24, req.targetDurationSec);
       const frequency = 180 + (i + 1) * 48;
 
-      const wav = createToneWav({
-        frequency,
-        durationSec
-      });
-      await writeFile(filePath, wav);
+      const wav = createToneWav({ frequency, durationSec });
+      const stored = await putBuffer(pathname, wav, "audio/wav");
 
       const suffix = prompts[i].split(",").slice(-2).join(",");
 
@@ -69,16 +57,17 @@ export class MockMusicProvider implements MusicProvider {
         externalId: providerJobIds[i],
         title: titles[i] ?? `Sketch ${i + 1}`,
         prompt: prompts[i],
-        audioUrl: `/generated/${localName}`,
+        audioUrl: stored.url,
         durationSec,
         tags: ["preview", ...deriveTags({}, suffix)].slice(0, 5),
         isInstrumental
       });
     }
 
-    providerJobIds.forEach((id) => {
-      jobs.set(id, { createdAtMs, processingAtMs, completedAtMs, results });
-    });
+    const state: MockJobState = { results };
+    await Promise.all(
+      providerJobIds.map((id) => kvSet(stateKey(id), state, 60 * 60 * 6))
+    );
 
     return {
       providerJobIds,
@@ -90,34 +79,13 @@ export class MockMusicProvider implements MusicProvider {
   }
 
   async getStatus(ticket: MusicGenerationTicket): Promise<MusicGenerationStatus> {
-    const now = Date.now();
-    const state = jobs.get(ticket.providerJobIds[0]);
+    const state = await kvGet<MockJobState>(stateKey(ticket.providerJobIds[0]));
     if (!state) return { status: "failed", progress: 1, error: "Mock job not found" };
-
-    if (now < state.processingAtMs) {
-      return {
-        status: "queued",
-        progress: Number(
-          Math.max(0.05, (now - state.createdAtMs) / (state.processingAtMs - state.createdAtMs) / 3).toFixed(2)
-        )
-      };
-    }
-    if (now < state.completedAtMs) {
-      return {
-        status: "processing",
-        progress: Number(
-          (
-            0.3 +
-            ((now - state.processingAtMs) / (state.completedAtMs - state.processingAtMs)) * 0.65
-          ).toFixed(2)
-        )
-      };
-    }
     return { status: "completed", progress: 1 };
   }
 
   async fetchResults(ticket: MusicGenerationTicket): Promise<MusicGenerationResult[]> {
-    const state = jobs.get(ticket.providerJobIds[0]);
+    const state = await kvGet<MockJobState>(stateKey(ticket.providerJobIds[0]));
     return state ? state.results : [];
   }
 }

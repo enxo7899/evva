@@ -1,9 +1,22 @@
-import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
+import { putBuffer } from "@/server/runtime/storage";
 import { registerVideoAsset } from "@/server/services/compositions";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
+
+/**
+ * Multipart upload route.
+ *
+ * On Vercel, serverless request bodies are capped (~4.5MB on most plans),
+ * so large reels must use the direct-to-Blob flow (see `../upload-token`
+ * and `../register`). This endpoint remains useful:
+ *   - locally, where the Node server has no body-size cap;
+ *   - on Vercel, for small test files.
+ * Either way, the uploaded bytes are persisted via the storage abstraction
+ * (Blob in production, `public/uploads/` in dev).
+ */
 
 const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
 const ALLOWED_TYPES = new Set([
@@ -47,13 +60,13 @@ export async function POST(request: Request) {
   const filename = sanitizeFilename(file.name || "reel.mp4");
   const extension = path.extname(filename) || ".mp4";
   const uniqueName = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}${extension}`;
-  const uploadDir = path.join(process.cwd(), "public", "uploads");
 
-  await mkdir(uploadDir, { recursive: true });
-
-  const outputPath = path.join(uploadDir, uniqueName);
   const buffer = Buffer.from(await file.arrayBuffer());
-  await writeFile(outputPath, buffer);
+  const stored = await putBuffer(
+    `uploads/${uniqueName}`,
+    buffer,
+    file.type || "video/mp4"
+  );
 
   const durationFromClient = Number(formData.get("durationSec") ?? 0);
   const durationSec =
@@ -64,10 +77,8 @@ export async function POST(request: Request) {
   const widthFromClient = toPositiveInt(formData.get("width"));
   const heightFromClient = toPositiveInt(formData.get("height"));
 
-  const sourceUrl = `/uploads/${uniqueName}`;
-
   const videoAsset = await registerVideoAsset({
-    sourceUrl,
+    sourceUrl: stored.url,
     originalFilename: file.name || uniqueName,
     durationSec,
     mimeType: file.type,

@@ -1,6 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { env } from "@/lib/env";
+import { putBuffer } from "@/server/runtime/storage";
 import { deriveTags, buildPrompts } from "./prompting";
 import type {
   MusicGenerationRequest,
@@ -184,9 +183,6 @@ export class ReplicateMusicProvider implements MusicProvider {
       ticket.providerJobIds.map((id) => this.fetchPrediction(id))
     );
 
-    const outputDir = path.join(process.cwd(), "public", "generated");
-    await mkdir(outputDir, { recursive: true });
-
     const results: MusicGenerationResult[] = [];
 
     for (let i = 0; i < predictions.length; i++) {
@@ -196,14 +192,15 @@ export class ReplicateMusicProvider implements MusicProvider {
       const remoteUrl = Array.isArray(p.output) ? p.output[0] : p.output;
       if (!remoteUrl) continue;
 
-      const localName = `${ticket.providerJobIds[i]}.wav`;
-      const audioUrl = `/generated/${localName}`;
+      const pathname = `generated/${ticket.providerJobIds[i]}.wav`;
 
+      let audioUrl: string;
       try {
         const audioRes = await fetch(remoteUrl);
         if (!audioRes.ok) continue;
         const buffer = Buffer.from(await audioRes.arrayBuffer());
-        await writeFile(path.join(outputDir, localName), buffer);
+        const stored = await putBuffer(pathname, buffer, "audio/wav");
+        audioUrl = stored.url;
       } catch {
         continue;
       }
